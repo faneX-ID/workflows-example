@@ -14,13 +14,10 @@ permissions:
   issues: write
 
 env:
-  REQUIRED_WORKFLOW_SCHEMA_VERSION: "2.0.0"
+  MAIN_REPO: "faneX-ID/core"
+  MAIN_BRANCH: "main"
 
 jobs:
-  # =================================================================================
-  # JOB 1: PR Validation & Feedback
-  # Validates example workflow definitions
-  # =================================================================================
   pr-validation:
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
     runs-on: ubuntu-latest
@@ -35,109 +32,64 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pyyaml
+          pip install jsonschema requests
 
-      # --- 1. Validate workflows.json (optional for examples) ---
-      - name: 📋 Validate workflows.json
+      - name: 📥 Fetch Version Info from faneX-ID Main Repository
+        id: versions
         run: |
           python << 'EOF'
           import json
-          from pathlib import Path
-
-          workflows_json = Path("workflows.json")
-          if workflows_json.exists():
-              with open(workflows_json) as f:
-                  data = json.load(f)
-
-              if "workflows" not in data or not isinstance(data["workflows"], list):
-                  print("❌ workflows.json must contain 'workflows' array")
-                  exit(1)
-
-              print(f"✅ workflows.json valid ({len(data['workflows'])} examples)")
-          else:
-              print("ℹ️ workflows.json not found (optional for examples)")
+          import requests
+          import os
+          main_repo = 'faneX-ID/faneX-ID'
+          main_branch = os.environ.get('MAIN_BRANCH', 'main')
+          versions_url = f"https://raw.githubusercontent.com/{main_repo}/{main_branch}/.github/versions.json"
+          try:
+              response = requests.get(versions_url, timeout=10)
+              response.raise_for_status()
+              versions = response.json()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"workflow_schema_version={versions.get('workflow_schema_version', '2.0.0')}\n")
+              print(f"✅ Fetched versions from {main_repo}")
+          except Exception as e:
+              print(f"⚠️ Could not fetch versions: {e}, using fallback")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write("workflow_schema_version=2.0.0\n")
           EOF
 
-      # --- 2. Validate Example Workflow YAML Files ---
-      - name: 📝 Validate Example Workflow YAML Files
+      - name: 📝 Validate Workflow Manifests
         run: |
           python << 'EOF'
-          import yaml
+          import json
           import sys
           from pathlib import Path
-
+          import requests
+          import jsonschema
+          schema_url = "https://raw.githubusercontent.com/faneX-ID/core/main/docs/specs/integrations-manifest/schemas/workflow-manifest.json"
+          try:
+              response = requests.get(schema_url, timeout=10)
+              response.raise_for_status()
+              schema = json.loads(response.text)
+          except Exception as e:
+              print(f"⚠️ Could not fetch schema: {e}")
+              sys.exit(1)
           errors = []
-          validated = 0
-
-          print("Validating example workflow YAML files...")
-
-          # Check all YAML files in examples directory
-          for yaml_file in Path(".").rglob("*.yaml"):
-              if ".github" in str(yaml_file):
-                  continue
-
+          for manifest_path in Path(".").glob("*/manifest.json"):
+              workflow_name = manifest_path.parent.name
               try:
-                  with open(yaml_file) as f:
-                      workflow_data = yaml.safe_load(f)
-
-                  if not workflow_data:
-                      continue
-
-                  # Basic validation (less strict for examples)
-                  if "id" not in workflow_data:
-                      errors.append(f"{yaml_file}: missing 'id' field")
-
-                  if "name" not in workflow_data:
-                      errors.append(f"{yaml_file}: missing 'name' field")
-
-                  # Trigger is recommended
-                  if "trigger" not in workflow_data:
-                      print(f"⚠️ {yaml_file}: missing 'trigger' (recommended)")
-
-                  if not any(e.startswith(str(yaml_file)) for e in errors):
-                      validated += 1
-                      print(f"✅ {yaml_file} valid")
-
-              except yaml.YAMLError as e:
-                  errors.append(f"{yaml_file}: Invalid YAML - {e}")
-              except Exception as e:
-                  errors.append(f"{yaml_file}: {e}")
-
+                  with open(manifest_path) as f:
+                      manifest = json.load(f)
+                  jsonschema.validate(instance=manifest, schema=schema)
+                  print(f"✅ {workflow_name} valid")
+              except jsonschema.ValidationError as e:
+                  errors.append(f"{workflow_name}: {e.message}")
           if errors:
               print("\n❌ Errors found:")
               for e in errors:
                   print(f"  - {e}")
               sys.exit(1)
-          else:
-              print(f"\n✅ All {validated} example workflow(s) valid.")
           EOF
 
-      # --- 3. Validate manifest.json (if exists) ---
-      - name: 📄 Validate manifest.json
-        run: |
-          python << 'EOF'
-          import json
-          from pathlib import Path
-
-          manifest_path = Path("manifest.json")
-          if manifest_path.exists():
-              try:
-                  with open(manifest_path) as f:
-                      manifest = json.load(f)
-
-                  required_fields = ["schema_version", "domain", "name", "version"]
-                  for field in required_fields:
-                      if field not in manifest:
-                          print(f"⚠️ manifest.json missing field '{field}'")
-                      else:
-                          print(f"✅ manifest.json valid")
-              except Exception as e:
-                  print(f"⚠️ Error reading manifest.json: {e}")
-          else:
-              print("ℹ️ manifest.json not found (optional)")
-          EOF
-
-      # --- 4. Feedback Comment ---
       - name: Feedback Comment
         if: always()
         uses: actions/github-script@v6
@@ -149,20 +101,17 @@ jobs:
                  issue_number: context.issue.number,
                  owner: context.repo.owner,
                  repo: context.repo.repo,
-                 body: "❌ **PR Validation Failed**\n\nPlease check:\n- Workflow YAML files are valid\n- Required fields (id, name) are present"
+                 body: "❌ **PR Validation Failed**\n\nPlease check the validation errors above."
                });
             } else if (outcome === 'success') {
                github.rest.issues.createComment({
                  issue_number: context.issue.number,
                  owner: context.repo.owner,
                  repo: context.repo.repo,
-                 body: "✅ **PR Validation Passed**\n\nAll example workflow checks passed!"
+                 body: "✅ **PR Validation Passed**\n\nAll checks passed successfully!"
                });
             }
 
-  # =================================================================================
-  # JOB 2: Thank Contributor
-  # =================================================================================
   thank-you:
     if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
@@ -173,10 +122,9 @@ jobs:
             const author = context.payload.pull_request.user.login;
             const admins = ['FaserF', 'fabia', 'github-actions[bot]'];
             if (admins.includes(author)) return;
-
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `🎉 **Thank you @${author}!**\n\nYour contribution to the **faneX-ID Workflow Examples** is valuable! 🚀`
+              body: `🎉 **Thank you @${author}!**\n\nYour contribution to the **faneX-ID Workflows Example** repository is valuable! 🚀`
             });
