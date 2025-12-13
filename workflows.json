@@ -1,0 +1,10 @@
+{
+    "workflows": [
+        {
+            "id": "user_welcome",
+            "name": "User Welcome Email",
+            "file": "examples/welcome.yaml",
+            "version": "1.0.0"
+        }
+    ]
+}

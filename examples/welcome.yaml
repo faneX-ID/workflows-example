@@ -1,0 +1,12 @@
+id: user_welcome
+name: "User Welcome Email"
+trigger:
+  type: "event"
+  event_id: "user.created"
+conditions: []
+actions:
+  - service: "smtp.notify"
+    data:
+      subject: "Welcome to faneX-ID, {{ username }}!"
+      message: "Hello {{ username }}, welcome to the platform."
+
